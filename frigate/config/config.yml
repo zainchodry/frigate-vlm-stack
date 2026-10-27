@@ -1,0 +1,186 @@
+# Frigate NVR Configuration
+# Docs: https://docs.frigate.video/configuration/
+
+mqtt:
+  enabled: true
+  host: mqtt           # Docker service name
+  port: 1883
+
+detectors:
+  # CPU-based detector (no Coral TPU available)
+  cpu1:
+    type: cpu
+    num_threads: 4
+
+ffmpeg:
+  hwaccel_args: preset-vaapi   # Intel VAAPI hardware-accelerated decoding
+
+# ===========================================
+# Generative AI (VLM) - Vision Language Model
+# ===========================================
+# Uses Ollama locally for AI-powered event descriptions,
+# semantic search, and interactive chat about camera events.
+#
+# To enable: 
+#   1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+#   2. Pull the model: ollama pull qwen3-vl:4b
+#   3. Uncomment the genai block below
+# ===========================================
+# genai:
+#   enabled: true
+#   providers:
+#     ollama_local:
+#       provider: ollama
+#       base_url: http://host.docker.internal:11434  # Ollama on host machine
+#       model: qwen3-vl:4b
+#       roles:
+#         - descriptions    # Auto-generate event summaries
+#         - embeddings      # Semantic search across events
+#         - chat            # Ask questions about camera events
+#       extra_parameters:
+#         keep_alive: -1    # Keep model loaded in memory
+#         options:
+#           num_ctx: 4096
+#           temperature: 0.2
+
+# Global object detection settings
+objects:
+  track:
+    - person
+    - car
+    - dog
+    - cat
+  filters:
+    person:
+      min_area: 1500
+      max_area: 1000000
+      min_score: 0.5
+      threshold: 0.65
+    car:
+      min_area: 2000
+      min_score: 0.6
+      threshold: 0.7
+    dog:
+      min_area: 1500
+      min_score: 0.65     # strict: dog only if high confidence
+      threshold: 0.75    # strict: prevents human being mistaken for dog
+    cat:
+      min_area: 1000
+      min_score: 0.65     # strict: cat only if high confidence
+      threshold: 0.75    # strict: prevents false positives
+
+# Detection zone defaults
+detect:
+  enabled: true
+  width: 1920
+  height: 1080
+  fps: 5
+
+# Recording settings
+record:
+  enabled: true
+  alerts:
+    retain:
+      days: 14
+  detections:
+    retain:
+      days: 14
+  continuous:
+    days: 0
+  motion:
+    days: 7
+snapshots:
+  enabled: true
+  timestamp: true
+  bounding_box: true
+  retain:
+    default: 14
+
+# Birdseye - combined camera view
+birdseye:
+  enabled: true
+  mode: objects
+
+# ===========================================
+# Camera Configuration
+# ===========================================
+# NOTE: Replace the RTSP URLs below with your actual camera streams.
+#
+# Common RTSP URL formats:
+#   Hikvision:  rtsp://user:pass@192.168.0.x:554/Streaming/Channels/101
+#   Dahua:      rtsp://user:pass@192.168.0.x:554/cam/realmonitor?channel=1&subtype=0
+#   Reolink:    rtsp://user:pass@192.168.0.x:554/h264Preview_01_main
+#   Tapo:       rtsp://user:pass@192.168.0.x:554/stream1
+#   Generic:    rtsp://user:pass@192.168.0.x:554/live
+#
+# You can also use the built-in RTSP password:
+#   rtsp://rtsp_user:{FRIGATE_RTSP_PASSWORD}@camera_ip:554/path
+# ===========================================
+
+cameras:
+  # ---- iPhone Camera (IP Camera Lite on iPhone @ 192.168.0.133) ----
+  # go2rtc pulls the MJPEG/HTTP stream from the iPhone, converts it to
+  # H.264 via FFmpeg, and serves it as a local RTSP restream.
+  iphone_camera:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/iphone_camera
+          input_args: preset-rtsp-restream-low-latency
+          roles:
+            - detect
+            - record
+    detect:
+      width: 1920
+      height: 1080
+      fps: 5
+    objects:
+      track:
+        - person
+        - car
+        - dog
+        - cat
+    motion:
+      threshold: 25
+      contour_area: 100
+      improve_contrast: true
+    record:
+      enabled: true
+    snapshots:
+      enabled: true
+    face_recognition:
+      enabled: true
+      min_area: 400
+
+# Live view / go2rtc restream
+# go2rtc uses FFmpeg to pull the iPhone HTTP/MJPEG stream,
+# transcode it to H.264, and expose it as a local RTSP endpoint.
+# URL uses IP address (not hostname) so it resolves inside Docker.
+go2rtc:
+  streams:
+    iphone_camera:
+      # go2rtc pulls MJPEG from iPhone and transcodes to H.264
+      - ffmpeg:http://admin:admin@192.168.0.133:8081/video#video=h264
+version: 0.18-0
+
+# ===========================================
+# Face Recognition - Identify Zain & Mehtab
+# ===========================================
+# Frigate's built-in face recognition uses FaceNet embeddings
+# to match detected faces against the trained face library at:
+#   /media/frigate/clips/faces/Zain/
+#   /media/frigate/clips/faces/Mehtab/
+#
+# When a face is recognized, it sets the person's sub_label
+# to the matched name ("Zain" or "Mehtab").
+# Unknown faces keep the default "person" label.
+# ==================================================
+face_recognition:
+  enabled: true
+  model_size: small            # CPU-friendly FaceNet model (no GPU needed)
+  detection_threshold: 0.6     # Face detector confidence threshold
+  recognition_threshold: 0.80  # Recognition confidence threshold to apply name
+  unknown_score: 0.65          # Distance threshold for unknown faces
+  min_area: 400                # Min face area in pixels
+  min_faces: 1                 # 1 frame match immediately labels person
+  save_attempts: 100           # Save face crops for future review

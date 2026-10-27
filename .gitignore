@@ -1,0 +1,89 @@
+# ============================================
+# Git Ignore - Home Server (Frigate + Home Assistant + MQTT)
+# ============================================
+
+# Environment & Secrets
+.env
+*.env
+*.local.env
+
+# Python & Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Home Assistant
+homeassistant/config/.storage/
+homeassistant/config/.cloud/
+homeassistant/config/.cache/
+homeassistant/config/.ha_run.lock
+homeassistant/config/deps/
+homeassistant/config/tts/
+homeassistant/config/*.db
+homeassistant/config/*.db-*
+homeassistant/config/*.log
+homeassistant/config/*.log.*
+homeassistant/config/*.log.fault
+
+# Frigate NVR - Config & Secrets
+frigate/config/.*
+frigate/config/.jwt_secret
+frigate/config/*.db
+frigate/config/*.db-*
+frigate/config/*.lock
+frigate/config/model_cache/
+frigate/config/backup_config.yaml
+frigate/config/backup.db
+frigate/config/go2rtc_homekit.yml
+
+# Frigate NVR - Heavy Storage, Clips & Recordings
+frigate/storage/recordings/
+frigate/storage/exports/
+frigate/storage/clips/*
+!frigate/storage/clips/faces/
+frigate/storage/clips/faces/train/
+frigate/storage/clips/faces/*.webp
+frigate/storage/clips/faces/*.jpg
+frigate/storage/clips/faces/*.json
+!frigate/storage/clips/faces/Zain/
+!frigate/storage/clips/faces/Zain/**
+!frigate/storage/clips/faces/Mehtab/
+!frigate/storage/clips/faces/Mehtab/**
+frigate/media/
+
+# MQTT Broker (Mosquitto)
+mqtt/data/
+mqtt/log/
+
+# IDE, OS, & Workspace Tools
+.omc/
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+*.bak
+*.tmp

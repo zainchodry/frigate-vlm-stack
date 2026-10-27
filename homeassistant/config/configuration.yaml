@@ -1,0 +1,136 @@
+# Home Assistant Main Configuration
+
+# Basic setup
+homeassistant:
+  name: Home
+  unit_system: metric
+  time_zone: Asia/Karachi
+  currency: PKR
+  country: PK
+  language: en
+
+# Enable the frontend
+frontend:
+
+# Enable the default config (includes automation, scene, script, etc.)
+default_config:
+
+# HTTP configuration
+http:
+  server_port: 8123
+
+# Enable the API for external access
+api:
+
+# Logger - set to warning to reduce noise
+logger:
+  default: warning
+  logs:
+    custom_components.frigate: info
+
+# MQTT is configured via Home Assistant integration entries
+
+# ============================================
+# Automation - Frigate Alerts & Notifications
+# ============================================
+automation:
+  # ---------------------------------------------------------
+  # 1. ZAIN RECOGNIZED — iPhone Camera Face Recognition
+  # ---------------------------------------------------------
+  - id: frigate_face_zain_iphone_camera
+    alias: "Frigate - Zain Recognized (iPhone Camera)"
+    description: "Send alert when Zain is identified by face recognition on iPhone camera"
+    mode: queued
+    trigger:
+      - platform: mqtt
+        topic: frigate/events
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json['type'] in ['new', 'update'] }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json['after']['camera'] == 'iphone_camera' }}"
+      - condition: template
+        value_template: "{{ 'zain' in (trigger.payload_json['after']['sub_label'] | string | lower) }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "👤 Zain Recognized — iPhone Camera"
+          message: >
+            Zain has been recognized on the iPhone Camera at {{ now().strftime('%H:%M:%S') }}.
+            Detection Score: {{ (trigger.payload_json['after']['top_score'] | float * 100) | round(1) }}%
+
+  # ---------------------------------------------------------
+  # 2. MEHTAB RECOGNIZED — iPhone Camera Face Recognition
+  # ---------------------------------------------------------
+  - id: frigate_face_mehtab_iphone_camera
+    alias: "Frigate - Mehtab Recognized (iPhone Camera)"
+    description: "Send alert when Mehtab is identified by face recognition on iPhone camera"
+    mode: queued
+    trigger:
+      - platform: mqtt
+        topic: frigate/events
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json['type'] in ['new', 'update'] }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json['after']['camera'] == 'iphone_camera' }}"
+      - condition: template
+        value_template: "{{ 'mehtab' in (trigger.payload_json['after']['sub_label'] | string | lower) }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "👤 Mehtab Recognized — iPhone Camera"
+          message: >
+            Mehtab has been recognized on the iPhone Camera at {{ now().strftime('%H:%M:%S') }}.
+            Detection Score: {{ (trigger.payload_json['after']['top_score'] | float * 100) | round(1) }}%
+
+  # ---------------------------------------------------------
+  # 3. UNKNOWN PERSON DETECTED — iPhone Camera
+  # ---------------------------------------------------------
+  - id: frigate_unknown_person_iphone_camera
+    alias: "Frigate - Unknown Person Detected (iPhone Camera)"
+    description: "Send alert when an unknown or unidentified person is detected on iPhone camera"
+    mode: queued
+    trigger:
+      - platform: mqtt
+        topic: frigate/events
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json['type'] == 'new' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json['after']['camera'] == 'iphone_camera' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json['after']['label'] == 'person' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json['after']['sub_label'] is none or trigger.payload_json['after']['sub_label'] == '' }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "🚶 Unknown Person Detected — iPhone Camera"
+          message: >
+            An unidentified person was detected on iPhone Camera at {{ now().strftime('%H:%M:%S') }}.
+            Detection Score: {{ (trigger.payload_json['after']['top_score'] | float * 100) | round(1) }}%
+
+  # ---------------------------------------------------------
+  # 4. CAR DETECTED — iPhone Camera
+  # ---------------------------------------------------------
+  - id: frigate_car_detected
+    alias: "Frigate - Car Detected"
+    description: "Alert when Frigate detects a car on camera"
+    mode: queued
+    trigger:
+      - platform: mqtt
+        topic: frigate/events
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json['type'] == 'new' }}"
+      - condition: template
+        value_template: "{{ trigger.payload_json['after']['label'] == 'car' }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "🚗 Car Detected!"
+          message: >
+            A car was detected by {{ trigger.payload_json['after']['camera'] }}
+            at {{ now().strftime('%H:%M:%S') }}.
+

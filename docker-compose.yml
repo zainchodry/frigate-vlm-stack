@@ -1,0 +1,73 @@
+services:
+  # ============================================
+  # Frigate NVR - AI-powered camera monitoring
+  # ============================================
+  frigate:
+    container_name: frigate
+    image: ghcr.io/blakeblackshear/frigate:stable
+    restart: unless-stopped
+    privileged: true
+    shm_size: "256mb"
+    ports:
+      - "5000:5000"   # Frigate Web UI
+      - "8554:8554"   # RTSP feeds (re-stream)
+      - "8555:8555/tcp" # WebRTC over TCP
+      - "8555:8555/udp" # WebRTC over UDP
+    volumes:
+      - ./frigate/config:/config
+      - ./frigate/storage:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000  # 1GB tmpfs for cache
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128  # Intel VAAPI HW acceleration
+    environment:
+      - FRIGATE_RTSP_PASSWORD=changeme123
+      - TZ=Asia/Karachi
+    networks:
+      - home-server
+    depends_on:
+      - mqtt
+
+  # ============================================
+  # Home Assistant - Smart home hub
+  # ============================================
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "8123:8123"   # Home Assistant Web UI
+    volumes:
+      - ./homeassistant/config:/config
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=Asia/Karachi
+    networks:
+      - home-server
+    depends_on:
+      - mqtt
+      - frigate
+
+  # ============================================
+  # Mosquitto MQTT Broker - Message bus between
+  # Frigate and Home Assistant
+  # ============================================
+  mqtt:
+    container_name: mqtt
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # MQTT
+    volumes:
+      - ./mqtt/config:/mosquitto/config
+      - ./mqtt/data:/mosquitto/data
+      - ./mqtt/log:/mosquitto/log
+    networks:
+      - home-server
+
+networks:
+  home-server:
+    driver: bridge
