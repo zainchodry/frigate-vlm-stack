@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -13,6 +14,7 @@ from app.connectors.frigate_mqtt import FrigateMqttConnector
 from app.connectors.home_assistant import HomeAssistantConnector
 from app.logging import configure_logging
 from app.monitoring.disk import DiskMonitor
+from app.services.media_archive import MediaArchivePolicy, MediaArchiver
 
 
 def create_app(settings: AppSettings | None = None, start_connectors: bool = True) -> FastAPI:
@@ -31,7 +33,22 @@ def create_app(settings: AppSettings | None = None, start_connectors: bool = Tru
         )
 
         connectors: list[object] = []
+        media_archiver = None
         if application.state.start_connectors and db.session_factory is not None:
+            media_archiver = MediaArchiver(
+                session_factory=db.session_factory,
+                policy=MediaArchivePolicy(
+                    root=Path(active_settings.media_archive_root),
+                    max_bytes=active_settings.media_archive_max_bytes,
+                    reserve_free_bytes=active_settings.media_archive_reserve_free_bytes,
+                    retention_days=active_settings.media_archive_retention_days,
+                ),
+                frigate_url=active_settings.frigate_url,
+                ha_url=active_settings.ha_url,
+                ha_token=active_settings.ha_token,
+                retry_max_attempts=active_settings.media_retry_max_attempts,
+            )
+            await media_archiver.start()
             mqtt_connector = FrigateMqttConnector(
                 session_factory=db.session_factory,
                 mqtt_host=active_settings.mqtt_host,
@@ -41,6 +58,7 @@ def create_app(settings: AppSettings | None = None, start_connectors: bool = Tru
                 mqtt_password=active_settings.mqtt_password,
                 mqtt_topics=active_settings.mqtt_topics,
                 max_inflight=active_settings.mqtt_max_inflight,
+                media_archiver=media_archiver,
             )
             ha_connector = HomeAssistantConnector(
                 session_factory=db.session_factory,
@@ -52,6 +70,7 @@ def create_app(settings: AppSettings | None = None, start_connectors: bool = Tru
                 retry_max_attempts=active_settings.retry_max_attempts,
                 retry_base_seconds=active_settings.retry_base_seconds,
                 retry_max_delay_seconds=active_settings.retry_max_delay_seconds,
+                media_archiver=media_archiver,
             )
             await mqtt_connector.start()
             await ha_connector.start()
@@ -66,6 +85,8 @@ def create_app(settings: AppSettings | None = None, start_connectors: bool = Tru
                     await connector.stop()  # type: ignore[attr-defined]
                 except Exception:
                     logging.getLogger(__name__).exception("connector shutdown failed")
+            if media_archiver is not None:
+                await media_archiver.stop()
             await db.dispose_database()
 
     application = FastAPI(title="Home Server Ingestion", version="0.1.0", lifespan=lifespan)

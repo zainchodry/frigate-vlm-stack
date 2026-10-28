@@ -34,3 +34,24 @@ def test_idempotency_constraints_are_declared():
         constraint.name == "uq_ha_events_ingest_message"
         for constraint in event.constraints
     )
+
+
+def test_media_assets_have_archive_state_and_deduplication_fields():
+    media = Base.metadata.tables["media_assets"]
+
+    assert {
+        "asset_key",
+        "entity_id",
+        "archive_path",
+        "size_bytes",
+        "mime_type",
+        "copy_status",
+        "attempt_count",
+        "last_error",
+        "last_attempt_at",
+        "completed_at",
+    } <= set(media.c.keys())
+    assert any(
+        constraint.name == "uq_media_assets_asset_key"
+        for constraint in media.constraints
+    )

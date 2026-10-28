@@ -34,8 +34,19 @@ class AppSettings(BaseSettings):
     ha_history_max_lookback_seconds: int = Field(default=900, validation_alias="HA_HISTORY_MAX_LOOKBACK_SECONDS")
     ha_history_overlap_seconds: int = Field(default=5, validation_alias="HA_HISTORY_OVERLAP_SECONDS")
 
+    frigate_url: str = Field(default="http://frigate:5000", validation_alias="FRIGATE_URL")
+    media_archive_root: str = Field(default="/media_archive", validation_alias="MEDIA_ARCHIVE_ROOT")
+    media_archive_max_bytes: int = Field(default=512 * 1024**2, validation_alias="MEDIA_ARCHIVE_MAX_BYTES")
+    media_archive_reserve_free_bytes: int = Field(
+        default=8 * 1024**3,
+        validation_alias="MEDIA_ARCHIVE_RESERVE_FREE_BYTES",
+    )
+    media_archive_retention_days: int = Field(default=7, validation_alias="MEDIA_ARCHIVE_RETENTION_DAYS")
+    media_retry_max_attempts: int = Field(default=3, validation_alias="MEDIA_RETRY_MAX_ATTEMPTS")
+
     api_host: str = Field(default="127.0.0.1", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")
+    api_token: str = Field(default="", validation_alias="API_TOKEN")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
 
     retry_max_attempts: int = Field(default=8, validation_alias="RETRY_MAX_ATTEMPTS")

@@ -151,19 +151,32 @@ class MediaAsset(Base):
     __table_args__ = (
         Index("ix_media_assets_event", "event_id", "media_type"),
         Index("ix_media_assets_retention", "availability_status", "retention_until"),
+        Index("ix_media_assets_copy_status", "copy_status", "last_attempt_at"),
+        UniqueConstraint("asset_key", name="uq_media_assets_asset_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_key: Mapped[str] = mapped_column(String(512), nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     event_id: Mapped[str | None] = mapped_column(ForeignKey("frigate_events.event_id"))
     review_id: Mapped[str | None] = mapped_column(ForeignKey("frigate_reviews.review_id"))
+    entity_id: Mapped[str | None] = mapped_column(String(255))
     media_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_path: Mapped[str | None] = mapped_column(Text)
     source_url: Mapped[str | None] = mapped_column(Text)
+    archive_path: Mapped[str | None] = mapped_column(Text)
     sha256: Mapped[str | None] = mapped_column(String(64))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    mime_type: Mapped[str | None] = mapped_column(String(128))
     storage_backend: Mapped[str | None] = mapped_column(String(64))
     retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     availability_status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="referenced")
+    copy_status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 

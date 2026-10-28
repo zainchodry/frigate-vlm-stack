@@ -78,6 +78,7 @@ mqtt/log/
 
 # Centralized ingestion database
 postgres/data/
+media_archive/
 backend/.coverage
 backend/.pytest_cache/
 

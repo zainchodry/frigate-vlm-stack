@@ -109,15 +109,22 @@ services:
       MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-home-server-ingestor}
       MQTT_USERNAME: ${MQTT_USERNAME:-}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-}
-      MQTT_TOPICS: ${MQTT_TOPICS:-frigate/events,frigate/reviews,frigate/notifications,frigate/available}
+      MQTT_TOPICS: ${MQTT_TOPICS:-["frigate/events","frigate/reviews","frigate/tracked_object_update","frigate/notifications","frigate/available","frigate/+/status/#"]}
       MQTT_MAX_INFLIGHT: ${MQTT_MAX_INFLIGHT:-100}
       HA_URL: ${HA_URL:-http://homeassistant:8123}
       HA_TOKEN: ${HA_TOKEN:?HA_TOKEN must be set in .env}
-      HA_EVENT_TYPES: ${HA_EVENT_TYPES:-state_changed,automation_triggered,call_service}
+      HA_EVENT_TYPES: ${HA_EVENT_TYPES:-["state_changed","automation_triggered","call_service"]}
       HA_HISTORY_MAX_LOOKBACK_SECONDS: ${HA_HISTORY_MAX_LOOKBACK_SECONDS:-900}
       HA_HISTORY_OVERLAP_SECONDS: ${HA_HISTORY_OVERLAP_SECONDS:-5}
+      FRIGATE_URL: ${FRIGATE_URL:-http://frigate:5000}
+      MEDIA_ARCHIVE_ROOT: ${MEDIA_ARCHIVE_ROOT:-/media_archive}
+      MEDIA_ARCHIVE_MAX_BYTES: ${MEDIA_ARCHIVE_MAX_BYTES:-536870912}
+      MEDIA_ARCHIVE_RESERVE_FREE_BYTES: ${MEDIA_ARCHIVE_RESERVE_FREE_BYTES:-8589934592}
+      MEDIA_ARCHIVE_RETENTION_DAYS: ${MEDIA_ARCHIVE_RETENTION_DAYS:-7}
+      MEDIA_RETRY_MAX_ATTEMPTS: ${MEDIA_RETRY_MAX_ATTEMPTS:-3}
       API_HOST: 0.0.0.0
       API_PORT: 8000
+      API_TOKEN: ${API_TOKEN:?API_TOKEN must be set in .env}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-8}
       RETRY_BASE_SECONDS: ${RETRY_BASE_SECONDS:-0.5}
@@ -128,6 +135,7 @@ services:
       DISK_CRITICAL_FREE_RATIO: ${DISK_CRITICAL_FREE_RATIO:-0.10}
     volumes:
       - ${POSTGRES_DATA_PATH:-./postgres/data}:/var/lib/postgresql/data:ro
+      - ${MEDIA_ARCHIVE_PATH:-./media_archive}:${MEDIA_ARCHIVE_ROOT:-/media_archive}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:

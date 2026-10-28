@@ -11,6 +11,7 @@ import paho.mqtt.client as mqtt
 from app.domain.keys import frigate_idempotency_key
 from app.domain.normalizers import normalize_frigate
 from app.services.ingestion import IngestEnvelope, ingest_message
+from app.services.media_archive import MediaArchiver
 
 
 class FrigateMqttConnector:
@@ -24,6 +25,7 @@ class FrigateMqttConnector:
         mqtt_password: str | None,
         mqtt_topics: tuple[str, ...],
         max_inflight: int = 100,
+        media_archiver: MediaArchiver | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -33,6 +35,7 @@ class FrigateMqttConnector:
         self._mqtt_username = mqtt_username
         self._mqtt_password = mqtt_password
         self._mqtt_topics = mqtt_topics
+        self._media_archiver = media_archiver
         self._logger = logger or logging.getLogger(__name__)
         self._semaphore = asyncio.Semaphore(max_inflight)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -110,6 +113,8 @@ class FrigateMqttConnector:
             )
             async with self._session_factory() as session:
                 await ingest_message(session, envelope)
+            if self._media_archiver is not None:
+                await self._media_archiver.observe_frigate(normalized)
 
             client = self._client
             if client is not None:

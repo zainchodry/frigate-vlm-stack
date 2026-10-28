@@ -1,17 +1,51 @@
 from __future__ import annotations
 
+import secrets
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import select, text
 
 from app import db
 from app.config import AppSettings, get_settings
 from app.monitoring.disk import DiskMonitor
+from app.models import FrigateEvent, FrigateReview, HomeAssistantEntity, HomeAssistantStateChange, MediaAsset
 
 
 router = APIRouter()
+
+
+def api_token_is_valid(request: Request, expected_token: str) -> bool:
+    if not expected_token:
+        return False
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        candidate = authorization[7:].strip()
+    else:
+        candidate = request.headers.get("x-api-key", "")
+    return bool(candidate) and secrets.compare_digest(candidate, expected_token)
+
+
+def _require_api_token(request: Request) -> None:
+    settings = _settings(request)
+    if not api_token_is_valid(request, settings.api_token):
+        raise HTTPException(status_code=401, detail="authentication required")
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+
+
+async def _media_for_events(session: Any, event_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not event_ids:
+        return {}
+    result = await session.execute(select(MediaAsset).where(MediaAsset.event_id.in_(event_ids)))
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for asset in result.scalars().all():
+        grouped.setdefault(asset.event_id, []).append(_row_dict(asset))
+    return grouped
 
 
 def _settings(request: Request) -> AppSettings:
@@ -72,3 +106,97 @@ async def health_ready(request: Request) -> JSONResponse:
 async def health(request: Request) -> JSONResponse:
     status_code, content = await _readiness(request)
     return JSONResponse(status_code=status_code, content=content)
+
+
+@router.get("/api/frigate/events")
+async def frigate_events(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    camera: str | None = None,
+    _authorized: None = Depends(_require_api_token),
+) -> dict[str, Any]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        statement = select(FrigateEvent).order_by(FrigateEvent.start_time.desc()).limit(limit)
+        if camera:
+            statement = statement.where(FrigateEvent.camera == camera)
+        result = await session.execute(statement)
+        rows = list(result.scalars().all())
+        media = await _media_for_events(session, [row.event_id for row in rows])
+    return {"events": [{**_row_dict(row), "media": media.get(row.event_id, [])} for row in rows]}
+
+
+@router.get("/api/frigate/events/{event_id}")
+async def frigate_event(
+    event_id: str,
+    request: Request,
+    _authorized: None = Depends(_require_api_token),
+) -> dict[str, Any]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        event = await session.get(FrigateEvent, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="event not found")
+        result = await session.execute(select(MediaAsset).where(MediaAsset.event_id == event_id))
+        media = [_row_dict(asset) for asset in result.scalars().all()]
+    return {"event": _row_dict(event), "media": media}
+
+
+@router.get("/api/media/{asset_id}/metadata")
+async def media_metadata(
+    asset_id: str,
+    request: Request,
+    _authorized: None = Depends(_require_api_token),
+) -> dict[str, Any]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        asset = await session.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="media asset not found")
+    return {"media": _row_dict(asset)}
+
+
+@router.get("/api/media/{asset_id}")
+async def media_file(
+    asset_id: str,
+    request: Request,
+    _authorized: None = Depends(_require_api_token),
+) -> FileResponse:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        asset = await session.get(MediaAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="media asset not found")
+    if asset.copy_status != "archived" or not asset.archive_path:
+        raise HTTPException(status_code=409, detail="media asset is not archived")
+    root = Path(_settings(request).media_archive_root).resolve(strict=False)
+    path = Path(asset.archive_path).resolve(strict=False)
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(status_code=404, detail="archived media file unavailable")
+    return FileResponse(path, media_type=asset.mime_type or "application/octet-stream")
+
+
+@router.get("/api/home-assistant/entities/{entity_id}")
+async def home_assistant_entity(
+    entity_id: str,
+    request: Request,
+    _authorized: None = Depends(_require_api_token),
+) -> dict[str, Any]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        entity = await session.get(HomeAssistantEntity, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        result = await session.execute(
+            select(HomeAssistantStateChange)
+            .where(HomeAssistantStateChange.entity_id == entity_id)
+            .order_by(HomeAssistantStateChange.source_event_at.desc())
+            .limit(100)
+        )
+        states = [_row_dict(state) for state in result.scalars().all()]
+    return {"entity": _row_dict(entity), "states": states}

@@ -19,6 +19,7 @@ except ImportError:  # websockets 13 compatibility
 from app.domain.normalizers import normalize_home_assistant
 from app.domain.timestamps import parse_timestamp
 from app.models import ConnectorCheckpoint
+from app.services.media_archive import MediaArchiver
 from app.services.ingestion import build_home_assistant_envelope, ingest_message
 from app.services.retry import retry_async
 
@@ -37,6 +38,7 @@ class HomeAssistantConnector:
         retry_max_attempts: int = 8,
         retry_base_seconds: float = 0.5,
         retry_max_delay_seconds: float = 30.0,
+        media_archiver: MediaArchiver | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -48,6 +50,7 @@ class HomeAssistantConnector:
         self._retry_max_attempts = retry_max_attempts
         self._retry_base_seconds = retry_base_seconds
         self._retry_max_delay_seconds = retry_max_delay_seconds
+        self._media_archiver = media_archiver
         self._logger = logger or logging.getLogger(__name__)
         self._http: httpx.AsyncClient | None = None
         self._websocket: Any = None
@@ -184,6 +187,8 @@ class HomeAssistantConnector:
         envelope = build_home_assistant_envelope(event, source_event_at)
         async with self._session_factory() as session:
             await ingest_message(session, envelope)
+        if self._media_archiver is not None:
+            await self._media_archiver.observe_home_assistant(normalized)
 
         if source_event_at and (self._last_source_at is None or source_event_at > self._last_source_at):
             self._last_source_at = source_event_at
