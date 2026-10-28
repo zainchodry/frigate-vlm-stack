@@ -76,6 +76,11 @@ frigate/media/
 mqtt/data/
 mqtt/log/
 
+# Centralized ingestion database
+postgres/data/
+backend/.coverage
+backend/.pytest_cache/
+
 # IDE, OS, & Workspace Tools
 .omc/
 .idea/
