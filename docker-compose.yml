@@ -91,6 +91,55 @@ services:
     networks:
       - home-server
 
+  # ============================================
+  # Centralized ingestion API and connectors - phase one
+  # Host exposure is loopback-only; no media volume is mounted
+  # ============================================
+  ingestor:
+    container_name: home-server-ingestor
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in .env}
+      POSTGRES_DATA_PATH: /var/lib/postgresql/data
+      DATABASE_MAX_BYTES: ${DATABASE_MAX_BYTES:-2147483648}
+      MQTT_HOST: ${MQTT_HOST:-mqtt}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-home-server-ingestor}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_TOPICS: ${MQTT_TOPICS:-frigate/events,frigate/reviews,frigate/notifications,frigate/available}
+      MQTT_MAX_INFLIGHT: ${MQTT_MAX_INFLIGHT:-100}
+      HA_URL: ${HA_URL:-http://homeassistant:8123}
+      HA_TOKEN: ${HA_TOKEN:?HA_TOKEN must be set in .env}
+      HA_EVENT_TYPES: ${HA_EVENT_TYPES:-state_changed,automation_triggered,call_service}
+      HA_HISTORY_MAX_LOOKBACK_SECONDS: ${HA_HISTORY_MAX_LOOKBACK_SECONDS:-900}
+      HA_HISTORY_OVERLAP_SECONDS: ${HA_HISTORY_OVERLAP_SECONDS:-5}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-8}
+      RETRY_BASE_SECONDS: ${RETRY_BASE_SECONDS:-0.5}
+      RETRY_MAX_DELAY_SECONDS: ${RETRY_MAX_DELAY_SECONDS:-30}
+      DISK_WARNING_FREE_BYTES: ${DISK_WARNING_FREE_BYTES:-4294967296}
+      DISK_CRITICAL_FREE_BYTES: ${DISK_CRITICAL_FREE_BYTES:-2147483648}
+      DISK_WARNING_FREE_RATIO: ${DISK_WARNING_FREE_RATIO:-0.20}
+      DISK_CRITICAL_FREE_RATIO: ${DISK_CRITICAL_FREE_RATIO:-0.10}
+    volumes:
+      - ${POSTGRES_DATA_PATH:-./postgres/data}:/var/lib/postgresql/data:ro
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+      homeassistant:
+        condition: service_started
+    networks:
+      - home-server
+
 networks:
   home-server:
     driver: bridge

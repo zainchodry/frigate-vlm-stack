@@ -19,6 +19,11 @@ class AppSettings(BaseSettings):
     mqtt_client_id: str = Field(default="home-server-ingestor", validation_alias="MQTT_CLIENT_ID")
     mqtt_username: str | None = Field(default=None, validation_alias="MQTT_USERNAME")
     mqtt_password: str | None = Field(default=None, validation_alias="MQTT_PASSWORD")
+    mqtt_topics: tuple[str, ...] = Field(
+        default=("frigate/events", "frigate/reviews", "frigate/notifications", "frigate/available"),
+        validation_alias="MQTT_TOPICS",
+    )
+    mqtt_max_inflight: int = Field(default=100, validation_alias="MQTT_MAX_INFLIGHT")
 
     ha_url: str = Field(default="http://homeassistant:8123", validation_alias="HA_URL")
     ha_token: str = Field(default="", validation_alias="HA_TOKEN")
@@ -49,6 +54,13 @@ class AppSettings(BaseSettings):
             return tuple(item.strip() for item in value.split(",") if item.strip())
         return tuple(value)
 
+    @field_validator("mqtt_topics", mode="before")
+    @classmethod
+    def parse_mqtt_topics(cls, value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            return tuple(item.strip() for item in value.split(",") if item.strip())
+        return tuple(value)
+
     def safe_summary(self) -> dict[str, Any]:
         return redact_mapping(self.model_dump())
 
@@ -56,4 +68,3 @@ class AppSettings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     return AppSettings()
-
