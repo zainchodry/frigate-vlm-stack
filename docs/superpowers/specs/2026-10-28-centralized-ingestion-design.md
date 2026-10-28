@@ -102,6 +102,19 @@ One current lifecycle row per Frigate tracked-object event ID.
 
 An update or end message upserts this row. The source envelope remains the audit history, so lifecycle changes are not lost while duplicate MQTT deliveries do not create duplicate event rows.
 
+### `frigate_reviews`
+
+One current lifecycle row per Frigate review/alert ID. Review messages are the alert-level view and may reference one or more tracked-object event IDs.
+
+- `review_id` text primary key.
+- Camera, severity, start/end timestamps, current event type, and latest source timestamp.
+- Detection/event IDs, objects, sub-labels, zones, and audio classifications as JSONB or normalized arrays.
+- Thumbnail path/URL reference, nullable; no thumbnail bytes are copied.
+- Raw `before` and `after` JSONB for forward compatibility.
+- `first_seen_at`, `last_seen_at`, and `ingest_message_id`.
+
+An update or end message upserts this row. The referenced tracked-object IDs remain queryable through `frigate_events`; duplicate review deliveries do not create duplicate alert rows.
+
 ### `home_assistant_entities`
 
 One row per entity ID, seeded by REST and updated on every state change.
