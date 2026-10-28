@@ -1,7 +1,7 @@
 # Centralized Ingestion Foundation Design
 
 **Date:** 2026-10-28  
-**Status:** Approved for implementation planning  
+**Status:** Approved for implementation planning; media-safety clarification incorporated
 **Scope:** Phase 1 — independent database ingestion and metadata storage
 
 ## Goal
@@ -16,7 +16,7 @@ The repository currently contains one Docker Compose stack with these existing s
 - Home Assistant, with its configuration mounted at `./homeassistant/config`.
 - Mosquitto, with configuration, persistence, and logs mounted below `./mqtt`.
 
-The existing Frigate configuration enables MQTT, recording, snapshots, object detection, and face recognition. The trained face data is under `frigate/storage/clips/faces`; this directory and all current media remain outside the phase-one change surface. Home Assistant is configured for the `Asia/Karachi` timezone and exposes its HTTP/API integration. Existing automations consume Frigate MQTT events.
+The existing Frigate configuration enables MQTT, recording, snapshots, object detection, and face recognition. The configured trained face libraries are under `frigate/storage/clips/faces/Zain` and `frigate/storage/clips/faces/Mehtab`; these directories and all current media remain outside the phase-one change surface. A read-only inventory also found companion training-related trees under `frigate/storage/clips/Zain` and `frigate/storage/clips/mehtab`, each containing `.training_metadata.json`, labeled datasets, and generated training images. Those trees, plus `frigate/storage/clips/faces/train` until its role is explicitly verified, are treated as protected training data. Home Assistant is configured for the `Asia/Karachi` timezone and exposes its HTTP/API integration. Existing automations consume Frigate MQTT events.
 
 The repository has one initial commit and no backend or PostgreSQL service. At inspection time the Compose project had no running containers, although the Docker daemon was available. The host has 8 CPUs and approximately 31 GiB RAM. The root filesystem is approximately 234 GiB total, 210 GiB used, and 12 GiB available (95% used). The checkout consumes approximately 15 GiB, almost all of it under `frigate/storage/recordings`; individual recording segments are approximately 30 MiB. This makes the root filesystem unsuitable for media duplication and unsuitable for an unbounded database.
 
@@ -179,6 +179,25 @@ The exact limit is an environment setting documented in `.env.example`, with a c
 
 No phase-one migration may run `rm`, delete old database rows, alter Frigate retention, alter Home Assistant recorder settings, or move files.
 
+### Protected training data and future cleanup
+
+Phase 1 performs no media cleanup. If a later storage emergency or approved phase-two cleanup proposes deleting regular Frigate recordings, event clips, snapshots, thumbnails, previews, or exports, the cleanup process must first:
+
+1. Resolve and display the real paths of all protected trees.
+2. Generate a complete file manifest with paths, sizes, and checksums for the protected trees.
+3. Classify every proposed deletion as a regular recording/snapshot/derived event artifact, never by a broad glob that could include training data.
+4. Exclude these exact protected trees and all descendants from every deletion command:
+   - `/home/enigmatix/home-server/frigate/storage/clips/faces/Zain/`
+   - `/home/enigmatix/home-server/frigate/storage/clips/faces/Mehtab/`
+   - `/home/enigmatix/home-server/frigate/storage/clips/Zain/`
+   - `/home/enigmatix/home-server/frigate/storage/clips/mehtab/`
+   - `/home/enigmatix/home-server/frigate/storage/clips/faces/train/` until its training role is verified.
+5. Create and verify a separate backup of the protected training trees before cleanup whenever sufficient destination storage exists.
+6. Show the user the exact protected paths, backup verification result, exact deletion paths, file count, and byte total and receive explicit approval.
+7. Re-check the protected manifest after deletion and report that no protected file changed, moved, or disappeared.
+
+No cleanup command may run before the user has reviewed the proposed deletion manifest. A future cleanup implementation must use an explicit allowlist of regular-media paths and fail closed if a candidate resolves inside a protected tree. It must never modify the Frigate model, configuration, recording path, retention settings, or Home Assistant configuration as a way to reclaim space.
+
 ## Security
 
 - `.env` is ignored and contains database credentials, the Home Assistant token, MQTT credentials if authentication is later enabled, and local endpoint settings.
@@ -219,6 +238,7 @@ Explicitly deferred:
 - Independent media filesystem provisioning.
 - Media hashing, deduplication, quota enforcement, and cleanup.
 - Database backup jobs and restore automation beyond documenting the required PostgreSQL backup/restore procedure.
+- Any deletion, backup, movement, or cleanup of regular Frigate media; this requires a separate reviewed manifest and explicit approval under the protected-training-data procedure above.
 - Search UI, dashboard, authentication for external users, and analytics.
 
 These deferred items form phase 2 and must be planned separately after storage capacity and retention requirements are confirmed.
