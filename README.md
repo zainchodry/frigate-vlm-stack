@@ -24,7 +24,7 @@ An all-in-one, privacy-focused home surveillance and automation platform powered
 ```mermaid
 flowchart TD
     subgraph CameraSource ["📹 Video Source"]
-        Cam["iPhone / IP Camera\n(IP Camera Lite @ 192.168.0.133:8081)"]
+        Cam["iPhone / IP Camera\n(private endpoint configured on the Frigate owner)"]
     end
 
     subgraph FrigateStack ["🧠 Frigate NVR (Port 5000)"]
@@ -58,7 +58,9 @@ flowchart TD
    - Low-latency WebRTC and MSE playback on Web & Mobile dashboards.
 2. **AI Object Detection**:
    - Multi-threaded CPU object detector tracking `person`, `car`, `dog`, and `cat`.
-   - Hardware-accelerated decoding support via Intel VAAPI (`/dev/dri/renderD128`).
+   - Hardware acceleration is host-dependent; the verified active Frigate
+     configuration uses software decode because the prior Intel VAAPI path
+     produced repeatable frame-sync failures.
 3. **Face Recognition (FaceNet ONNX Embeddings)**:
    - Evaluates face crops in real-time.
    - Accurately matches against stored libraries (e.g., **Zain** and **Mehtab**).
@@ -157,7 +159,7 @@ Frigate uses `go2rtc` for stream negotiation. In [frigate/config/config.yml](fri
 go2rtc:
   streams:
     iphone_camera:
-      - "http://admin:admin@192.168.0.133:8081/video"
+      - "http://<camera-credentials>@<current-camera-address>:<port>/video"
 
 cameras:
   iphone_camera:
@@ -174,7 +176,9 @@ cameras:
       fps: 5
 ```
 
-> **Note**: Replace `192.168.0.133:8081` with the IP address and port displayed in your camera app.
+> **Note**: Keep the working endpoint and credentials only in the Frigate owner's
+> private configuration. Do not copy camera credentials or private addresses
+> into this README or logs.
 
 ---
 
@@ -280,13 +284,14 @@ The script guides you through:
 
 ### Restart Frigate Gracefully
 ```bash
-curl -X POST http://localhost:5000/api/restart
+# Frigate is owned by the separate system-Docker runtime. Back up and validate
+# its config first, then invoke the supported POST /api/restart endpoint through
+# the existing ingestor network path; do not run this Compose project for Frigate.
 ```
 
 ### Inspect Frigate Logs
-```bash
-docker compose logs -f frigate
-```
+Use the active Frigate owner's logs and `/api/logs/frigate`; Frigate is not a
+service in this repository's Compose project.
 
 ### Inspect MQTT Messages
 To monitor live events published by Frigate:

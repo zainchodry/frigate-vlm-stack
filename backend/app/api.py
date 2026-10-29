@@ -11,7 +11,15 @@ from sqlalchemy import select, text
 from app import db
 from app.config import AppSettings, get_settings
 from app.monitoring.disk import DiskMonitor
-from app.models import FrigateEvent, FrigateReview, HomeAssistantEntity, HomeAssistantStateChange, MediaAsset
+from app.models import (
+    FaceRecognitionResult,
+    FrigateEvent,
+    FrigateReview,
+    HomeAssistantEntity,
+    HomeAssistantStateChange,
+    MediaAsset,
+    ServiceHeartbeat,
+)
 
 
 router = APIRouter()
@@ -35,7 +43,7 @@ def _require_api_token(request: Request) -> None:
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
-    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+    return {column.name: getattr(row, column.key) for column in row.__table__.columns}
 
 
 async def _media_for_events(session: Any, event_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -45,6 +53,21 @@ async def _media_for_events(session: Any, event_ids: list[str]) -> dict[str, lis
     grouped: dict[str, list[dict[str, Any]]] = {}
     for asset in result.scalars().all():
         grouped.setdefault(asset.event_id, []).append(_row_dict(asset))
+    return grouped
+
+
+async def _face_results_for_events(session: Any, event_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not event_ids:
+        return {}
+    result = await session.execute(
+        select(FaceRecognitionResult)
+        .where(FaceRecognitionResult.event_id.in_(event_ids))
+        .order_by(FaceRecognitionResult.recognized_at.desc())
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in result.scalars().all():
+        if item.event_id is not None:
+            grouped.setdefault(item.event_id, []).append(_row_dict(item))
     return grouped
 
 
@@ -108,6 +131,16 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=content)
 
 
+@router.get("/health/services")
+async def health_services() -> dict[str, Any]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        result = await session.execute(select(ServiceHeartbeat).order_by(ServiceHeartbeat.name))
+        services = [_row_dict(row) for row in result.scalars().all()]
+    return {"services": services}
+
+
 @router.get("/api/frigate/events")
 async def frigate_events(
     request: Request,
@@ -124,7 +157,17 @@ async def frigate_events(
         result = await session.execute(statement)
         rows = list(result.scalars().all())
         media = await _media_for_events(session, [row.event_id for row in rows])
-    return {"events": [{**_row_dict(row), "media": media.get(row.event_id, [])} for row in rows]}
+        faces = await _face_results_for_events(session, [row.event_id for row in rows])
+    return {
+        "events": [
+            {
+                **_row_dict(row),
+                "media": media.get(row.event_id, []),
+                "face_recognition": faces.get(row.event_id, []),
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.get("/api/frigate/events/{event_id}")
@@ -141,7 +184,35 @@ async def frigate_event(
             raise HTTPException(status_code=404, detail="event not found")
         result = await session.execute(select(MediaAsset).where(MediaAsset.event_id == event_id))
         media = [_row_dict(asset) for asset in result.scalars().all()]
-    return {"event": _row_dict(event), "media": media}
+        result = await session.execute(
+            select(FaceRecognitionResult)
+            .where(FaceRecognitionResult.event_id == event_id)
+            .order_by(FaceRecognitionResult.recognized_at.desc())
+        )
+        faces = [_row_dict(item) for item in result.scalars().all()]
+    return {"event": _row_dict(event), "media": media, "face_recognition": faces}
+
+
+@router.get("/api/frigate/face-recognition")
+async def frigate_face_recognition(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    identity: str | None = None,
+    _authorized: None = Depends(_require_api_token),
+) -> dict[str, Any]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        statement = (
+            select(FaceRecognitionResult)
+            .order_by(FaceRecognitionResult.recognized_at.desc())
+            .limit(limit)
+        )
+        if identity:
+            statement = statement.where(FaceRecognitionResult.identity == identity)
+        result = await session.execute(statement)
+        rows = [_row_dict(item) for item in result.scalars().all()]
+    return {"results": rows}
 
 
 @router.get("/api/media/{asset_id}/metadata")

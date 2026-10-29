@@ -14,6 +14,7 @@ from app.domain.normalizers import NormalizedMessage, normalize_frigate, normali
 from app.models import (
     FrigateEvent,
     FrigateReview,
+    FaceRecognitionResult,
     HomeAssistantEntity,
     HomeAssistantEvent,
     HomeAssistantStateChange,
@@ -102,14 +103,20 @@ async def ingest_message(session: AsyncSession, envelope: IngestEnvelope) -> Ing
             )
             return IngestResult(existing.scalar_one(), inserted=False, duplicate=True)
 
-        if envelope.source == "frigate":
+        if envelope.source in {"frigate", "frigate_sqlite"}:
             normalized = normalize_frigate(envelope.topic, envelope.payload)
         elif envelope.source == "home_assistant":
             normalized = normalize_home_assistant(envelope.payload)
         else:
             normalized = NormalizedMessage("unknown", envelope.idempotency_key, envelope.source_event_at, None, {})
 
-        await apply_projection(session, message_id, normalized, envelope.received_at)
+        await apply_projection(
+            session,
+            message_id,
+            normalized,
+            envelope.received_at,
+            source_system="frigate_mqtt" if envelope.source == "frigate" else envelope.source,
+        )
         await session.execute(
             update(IngestMessage)
             .where(IngestMessage.id == message_id)
@@ -124,9 +131,11 @@ async def apply_projection(
     message_id: uuid.UUID,
     normalized: NormalizedMessage,
     received_at: datetime,
+    source_system: str = "frigate_mqtt",
 ) -> None:
     if normalized.kind == "frigate_event":
         await _upsert_frigate_event(session, message_id, normalized)
+        await _upsert_face_recognition_result(session, message_id, normalized, received_at, source_system)
     elif normalized.kind == "frigate_review":
         await _upsert_frigate_review(session, message_id, normalized)
     elif normalized.kind in {"home_assistant_state_change", "home_assistant_state_seed"}:
@@ -150,15 +159,20 @@ async def _upsert_frigate_event(
     message_id: uuid.UUID,
     normalized: NormalizedMessage,
 ) -> None:
+    event_values = {
+        key: value
+        for key, value in normalized.values.items()
+        if key in FrigateEvent.__table__.columns
+    }
     values = {
         "event_id": normalized.key,
         "ingest_message_id": message_id,
-        **normalized.values,
+        **event_values,
     }
     stmt = insert(FrigateEvent).values(**values)
     update_values = {
         key: getattr(stmt.excluded, key)
-        for key in normalized.values
+        for key in event_values
         if key not in {"start_time", "frame_time"}
     }
     update_values["last_seen_at"] = func.now()
@@ -191,6 +205,69 @@ async def _upsert_frigate_review(
     await session.execute(stmt)
 
 
+async def _upsert_face_recognition_result(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    normalized: NormalizedMessage,
+    received_at: datetime,
+    source_system: str,
+) -> None:
+    identity = normalized.values.get("face_identity")
+    if not isinstance(identity, str) or not identity.strip():
+        return
+
+    identity = identity.strip()
+    status = "unknown" if identity.casefold() in {"unknown", "person"} else "recognized"
+    source_event_at = normalized.source_event_at or received_at
+    values = {
+        "id": uuid.uuid4(),
+        "event_id": normalized.key,
+        "event_reference": normalized.key,
+        "event_camera": normalized.values.get("camera"),
+        "event_label": normalized.values.get("label"),
+        "event_start_time": normalized.values.get("start_time"),
+        "event_end_time": normalized.values.get("end_time"),
+        "event_type": normalized.event_type,
+        "identity": identity,
+        "result_status": status,
+        "recognized_at": source_event_at,
+        "camera": normalized.values.get("camera"),
+        "match_score": normalized.values.get("face_score"),
+        "media_reference": normalized.values.get("face_media_reference"),
+        "source_system": source_system,
+        "source_key": f"{source_system}:event:{normalized.key}:face",
+        "result_metadata": {
+            "event_type": normalized.event_type,
+            "label": normalized.values.get("label"),
+        },
+        "ingest_message_id": message_id,
+        "ingested_at": received_at,
+    }
+    stmt = insert(FaceRecognitionResult).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[FaceRecognitionResult.source_key],
+        set_={
+            "event_id": stmt.excluded.event_id,
+            "event_reference": stmt.excluded.event_reference,
+            "event_camera": stmt.excluded.event_camera,
+            "event_label": stmt.excluded.event_label,
+            "event_start_time": stmt.excluded.event_start_time,
+            "event_end_time": stmt.excluded.event_end_time,
+            "event_type": stmt.excluded.event_type,
+            "identity": stmt.excluded.identity,
+            "result_status": stmt.excluded.result_status,
+            "recognized_at": stmt.excluded.recognized_at,
+            "camera": stmt.excluded.camera,
+            "match_score": stmt.excluded.match_score,
+            "media_reference": stmt.excluded.media_reference,
+            "result_metadata": stmt.excluded.result_metadata,
+            "ingest_message_id": stmt.excluded.ingest_message_id,
+            "ingested_at": stmt.excluded.ingested_at,
+        },
+    )
+    await session.execute(stmt)
+
+
 async def _insert_home_assistant_state(
     session: AsyncSession,
     message_id: uuid.UUID,
@@ -199,23 +276,33 @@ async def _insert_home_assistant_state(
 ) -> None:
     values = normalized.values
     source_event_at = normalized.source_event_at or received_at
-    await session.execute(
-        insert(HomeAssistantStateChange).values(
-            id=uuid.uuid4(),
-            ingest_message_id=message_id,
-            entity_id=values["entity_id"],
-            source_event_at=source_event_at,
-            old_state=values.get("old_state"),
-            new_state=values.get("new_state"),
-            old_attributes=values.get("old_attributes"),
-            new_attributes=values.get("new_attributes"),
-            last_changed=values.get("last_changed"),
-            last_updated=values.get("last_updated"),
-            context_id=values.get("context_id"),
-            parent_context_id=values.get("parent_context_id"),
-            user_id=values.get("user_id"),
-        )
+    semantic_match = await session.execute(
+        select(HomeAssistantStateChange.id).where(
+            HomeAssistantStateChange.entity_id == values["entity_id"],
+            HomeAssistantStateChange.source_event_at == source_event_at,
+            HomeAssistantStateChange.new_state == values.get("new_state"),
+            HomeAssistantStateChange.last_changed == values.get("last_changed"),
+            HomeAssistantStateChange.last_updated == values.get("last_updated"),
+        ).limit(1)
     )
+    if semantic_match.scalar_one_or_none() is None:
+        await session.execute(
+            insert(HomeAssistantStateChange).values(
+                id=uuid.uuid4(),
+                ingest_message_id=message_id,
+                entity_id=values["entity_id"],
+                source_event_at=source_event_at,
+                old_state=values.get("old_state"),
+                new_state=values.get("new_state"),
+                old_attributes=values.get("old_attributes"),
+                new_attributes=values.get("new_attributes"),
+                last_changed=values.get("last_changed"),
+                last_updated=values.get("last_updated"),
+                context_id=values.get("context_id"),
+                parent_context_id=values.get("parent_context_id"),
+                user_id=values.get("user_id"),
+            )
+        )
 
     entity_id = values["entity_id"]
     attributes = values.get("new_attributes") or {}

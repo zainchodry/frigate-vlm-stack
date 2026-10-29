@@ -64,6 +64,39 @@ class FrigateEvent(Base):
     ingest_message_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("ingest_messages.id"))
 
 
+class FaceRecognitionResult(Base):
+    __tablename__ = "face_recognition_results"
+    __table_args__ = (
+        UniqueConstraint("source_key", name="uq_face_recognition_results_source_key"),
+        Index("ix_face_recognition_results_event", "event_id", "recognized_at"),
+        Index("ix_face_recognition_results_identity", "identity", "recognized_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("frigate_events.event_id", ondelete="SET NULL")
+    )
+    # Keep a durable source reference and a small event projection so a
+    # future event-row purge cannot make the recognition result meaningless.
+    event_reference: Mapped[str | None] = mapped_column(String(128))
+    event_camera: Mapped[str | None] = mapped_column(String(128))
+    event_label: Mapped[str | None] = mapped_column(String(128))
+    event_start_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    event_end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    event_type: Mapped[str | None] = mapped_column(String(64))
+    identity: Mapped[str | None] = mapped_column(String(256))
+    result_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    recognized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    camera: Mapped[str | None] = mapped_column(String(128))
+    match_score: Mapped[float | None] = mapped_column(Float)
+    media_reference: Mapped[str | None] = mapped_column(Text)
+    source_system: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    result_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    ingest_message_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("ingest_messages.id"))
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class FrigateReview(Base):
     __tablename__ = "frigate_reviews"
     __table_args__ = (

@@ -69,6 +69,38 @@ def frigate_idempotency_key(topic: str, payload: dict[str, Any]) -> str:
 
 def home_assistant_idempotency_key(event: dict[str, Any]) -> str:
     event_type = event.get("event_type") or "event"
+    if event_type in {"state_seed", "state_changed"}:
+        data = event.get("data") or {}
+        if event_type == "state_seed":
+            entity_id = data.get("entity_id")
+            state = data.get("state")
+            last_changed = data.get("last_changed")
+            last_updated = data.get("last_updated")
+        else:
+            new_state = data.get("new_state") or {}
+            entity_id = data.get("entity_id") or new_state.get("entity_id")
+            state = new_state.get("state")
+            last_changed = new_state.get("last_changed")
+            last_updated = new_state.get("last_updated")
+
+        # HA image entities can rotate access-token query strings in
+        # `entity_picture` without changing the semantic state. Use HA's
+        # state timestamps as the idempotency boundary and keep volatile
+        # attributes out of the key; the complete attributes remain stored
+        # in the JSONB state row.
+        state_key = {
+            "entity_id": entity_id,
+            "state": state,
+            "last_changed": last_changed,
+            "last_updated": last_updated,
+        }
+        source_time = _payload_time(event)
+        time_key = source_time.isoformat() if source_time else "none"
+        # A live state_changed message and a REST seed/history record can
+        # describe the same HA state transition. They must share a logical
+        # key even though their transport event types differ.
+        return f"home_assistant:state:{time_key}:{canonical_sha256(state_key)}"
+
     source_time = _payload_time(event)
     time_key = source_time.isoformat() if source_time else "none"
     return f"home_assistant:{event_type}:{time_key}:{canonical_sha256(event)}"

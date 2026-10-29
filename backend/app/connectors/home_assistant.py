@@ -60,6 +60,9 @@ class HomeAssistantConnector:
         self._checkpoint_exists = False
         self._recovery_needed = False
         self._seed_complete = False
+        self._entity_ids: set[str] = set()
+        self._connected = False
+        self._last_error: str | None = None
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -101,6 +104,8 @@ class HomeAssistantConnector:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self._connected = False
+                self._last_error = "connection_cycle_failed"
                 self._logger.exception("Home Assistant connector cycle failed")
                 self._recovery_needed = self._last_source_at is not None
                 await self._write_checkpoint(state="degraded", gap_reason="websocket disconnected; recovery pending")
@@ -120,6 +125,7 @@ class HomeAssistantConnector:
         for state in states:
             if not isinstance(state, dict) or not state.get("entity_id"):
                 continue
+            self._entity_ids.add(str(state["entity_id"]))
             source_event_at = parse_timestamp(state.get("last_updated") or state.get("last_changed"))
             event = {
                 "event_type": "state_seed",
@@ -149,10 +155,18 @@ class HomeAssistantConnector:
             try:
                 await self._authenticate(websocket)
                 await self._subscribe(websocket)
-                if self._recovery_needed and self._last_source_at:
+                self._connected = True
+                self._last_error = None
+                recovering = self._recovery_needed and self._last_source_at is not None
+                if recovering:
                     await self._recover_gap(self._last_source_at, datetime.now(UTC))
                     self._recovery_needed = False
-                await self._write_checkpoint(state="healthy", gap_reason=None)
+                else:
+                    await self._write_checkpoint(
+                        state="healthy",
+                        gap_reason=None,
+                        recovery_complete=True,
+                    )
 
                 while not self._stop_event.is_set():
                     raw_message = await websocket.recv()
@@ -164,6 +178,7 @@ class HomeAssistantConnector:
                         if event.get("event_type") in self._event_types:
                             await self._handle_event(event)
             finally:
+                self._connected = False
                 self._websocket = None
 
     async def _authenticate(self, websocket: Any) -> None:
@@ -216,7 +231,14 @@ class HomeAssistantConnector:
         try:
             history = await self._request_json(
                 f"/api/history/period/{requested_start.isoformat()}",
-                params={"end_time": requested_end.isoformat(), "minimal_response": "false"},
+                params={
+                    "end_time": requested_end.isoformat(),
+                    "minimal_response": "false",
+                    # HA requires an explicit filter_entity_id for this
+                    # endpoint on current versions. The state seed gives us
+                    # the complete entity set without guessing domains.
+                    "filter_entity_id": ",".join(sorted(self._entity_ids)),
+                },
             )
             recovered_start: datetime | None = None
             recovered_end: datetime | None = None
@@ -300,6 +322,16 @@ class HomeAssistantConnector:
             max_delay=self._retry_max_delay_seconds,
             logger=self._logger,
         )
+
+    def health_snapshot(self) -> dict[str, Any]:
+        return {
+            "status": "healthy" if self._connected else "degraded",
+            "connected": self._connected,
+            "seed_complete": self._seed_complete,
+            "entity_count": len(self._entity_ids),
+            "last_source_at": self._last_source_at.isoformat() if self._last_source_at else None,
+            "last_error": self._last_error,
+        }
 
     def _websocket_url(self) -> str:
         parsed = urlparse(self._ha_url)

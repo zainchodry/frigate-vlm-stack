@@ -5,6 +5,7 @@ import asyncio
 import os
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
@@ -12,7 +13,7 @@ from typing import Any, Iterable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.domain.keys import canonical_sha256
@@ -133,6 +134,16 @@ def choose_collision_safe_path(destination: Path, digest: str, asset_id: str) ->
     return unique_path
 
 
+def build_partial_path(destination: Path, asset_id: str) -> Path:
+    """Build a collision-free temporary path for an interrupted copy.
+
+    A stable partial filename made retries fail with ``FileExistsError`` after
+    a process interruption. The final destination remains deterministic; only
+    the temporary writer path is unique per attempt.
+    """
+    return destination.with_name(f".{destination.name}.{_safe_component(asset_id)}.{uuid.uuid4().hex}.partial")
+
+
 def _check_capacity(policy: MediaArchivePolicy, incoming_bytes: int, free_bytes: int) -> None:
     if incoming_bytes < 0:
         raise ValueError("incoming_bytes must not be negative")
@@ -233,6 +244,7 @@ class MediaArchiver:
         ha_url: str,
         ha_token: str,
         retry_max_attempts: int = 3,
+        retry_interval_seconds: int = 300,
         logger: Any = None,
     ) -> None:
         self._session_factory = session_factory
@@ -241,14 +253,17 @@ class MediaArchiver:
         self._ha_url = ha_url.rstrip("/")
         self._ha_token = ha_token
         self._retry_max_attempts = max(1, retry_max_attempts)
+        self._retry_interval_seconds = max(30, retry_interval_seconds)
         self._logger = logger
         self._client: httpx.AsyncClient | None = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._retry_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         self._policy.root.mkdir(parents=True, exist_ok=True)
         self._client = httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(60.0, connect=5.0))
         await self.resume_pending()
+        self._retry_task = asyncio.create_task(self._retry_loop(), name="media-archive-retry")
 
     async def stop(self) -> None:
         tasks = list(self._tasks.values())
@@ -257,16 +272,52 @@ class MediaArchiver:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        retry_task = self._retry_task
+        self._retry_task = None
+        if retry_task is not None:
+            retry_task.cancel()
+            await asyncio.gather(retry_task, return_exceptions=True)
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    async def _retry_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._retry_interval_seconds)
+            try:
+                await self.resume_pending()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if self._logger is not None:
+                    self._logger.exception("media archive retry scan failed")
+
+    def health_snapshot(self) -> dict[str, Any]:
+        return {
+            "status": "healthy" if self._client is not None else "degraded",
+            "active_copy_tasks": len(self._tasks),
+            "retry_interval_seconds": self._retry_interval_seconds,
+        }
 
     async def resume_pending(self) -> None:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(MediaAsset.id).where(
-                    MediaAsset.copy_status.in_(("pending", "failed")),
-                    MediaAsset.attempt_count < self._retry_max_attempts,
+                    or_(
+                        and_(
+                            MediaAsset.copy_status.in_(("pending", "failed")),
+                            MediaAsset.attempt_count < self._retry_max_attempts,
+                        ),
+                        # Older ingestor versions attempted to create the
+                        # logical destination with exclusive mode. Retry
+                        # those durable failures after the collision-safe
+                        # writer is deployed; no source or archive file is
+                        # removed by this recovery path.
+                        and_(
+                            MediaAsset.copy_status == "failed",
+                            MediaAsset.last_error == "FileExistsError",
+                        ),
+                    )
                 )
             )
             asset_ids = [str(asset_id) for asset_id in result.scalars().all()]
@@ -465,7 +516,7 @@ class MediaArchiver:
                     shutil.disk_usage(self._policy.root).free,
                 )
             archive_path.parent.mkdir(parents=True, exist_ok=True)
-            partial = archive_path.with_name(f".{archive_path.name}.{asset_id}.partial")
+            partial = build_partial_path(archive_path, asset_id)
             digest = hashlib.sha256()
             written = 0
             try:

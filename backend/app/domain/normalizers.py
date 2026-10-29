@@ -40,6 +40,28 @@ def normalize_frigate(topic: str, payload: dict[str, Any]) -> NormalizedMessage:
     record = _record(payload)
 
     if topic.endswith("/events") and record.get("id"):
+        record_data = record.get("data") if isinstance(record.get("data"), dict) else {}
+        raw_sub_label = record.get("sub_label")
+        if isinstance(raw_sub_label, (list, tuple)):
+            face_identity = raw_sub_label[0] if raw_sub_label and raw_sub_label[0] is not None else None
+            sub_label_score = raw_sub_label[1] if len(raw_sub_label) > 1 else None
+        else:
+            face_identity = raw_sub_label
+            sub_label_score = None
+        face_score = next(
+            (
+                value
+                for value in (
+                    record.get("sub_label_score"),
+                    sub_label_score,
+                    record.get("face_score"),
+                    record.get("recognition_score"),
+                    record_data.get("sub_label_score"),
+                )
+                if value is not None
+            ),
+            None,
+        )
         source_event_at = _timestamp(
             record.get("frame_time"),
             record.get("end_time"),
@@ -48,7 +70,7 @@ def normalize_frigate(topic: str, payload: dict[str, Any]) -> NormalizedMessage:
         values = {
             "camera": record.get("camera"),
             "label": record.get("label"),
-            "sub_label": record.get("sub_label"),
+            "sub_label": face_identity,
             "top_score": record.get("top_score"),
             "start_time": _timestamp(record.get("start_time")),
             "end_time": _timestamp(record.get("end_time")),
@@ -60,6 +82,9 @@ def normalize_frigate(topic: str, payload: dict[str, Any]) -> NormalizedMessage:
             "recording_path": record.get("recording_path"),
             "raw_before": payload.get("before"),
             "raw_after": payload.get("after"),
+            "face_identity": face_identity,
+            "face_score": face_score,
+            "face_media_reference": record.get("snapshot_path") or record.get("recording_path"),
         }
         return NormalizedMessage("frigate_event", str(record["id"]), source_event_at, event_type, values)
 

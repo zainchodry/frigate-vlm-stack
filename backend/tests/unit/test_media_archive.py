@@ -9,6 +9,7 @@ from app.services.media_archive import (
     copy_bytes_atomically,
     is_protected_source,
     choose_collision_safe_path,
+    build_partial_path,
 )
 
 
@@ -73,3 +74,14 @@ def test_existing_archive_path_gets_content_addressed_alternate(tmp_path):
     )
 
     assert path == destination.with_name("image-e8f4c5b4c9f5b0a9.jpg")
+
+
+def test_partial_path_is_unique_for_each_attempt(tmp_path):
+    destination = tmp_path / "entity" / "image.jpg"
+
+    first = build_partial_path(destination, "asset-1")
+    second = build_partial_path(destination, "asset-1")
+
+    assert first != second
+    assert first.name.endswith(".partial")
+    assert second.name.endswith(".partial")

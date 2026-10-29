@@ -12,8 +12,11 @@ detectors:
     type: cpu
     num_threads: 4
 
+# Software decode is intentional on this host. The active Frigate 0.18.2
+# detect pipeline repeatedly failed VAAPI surface sync/hwdownload, while
+# CPU detection is already configured and recording remains enabled.
 ffmpeg:
-  hwaccel_args: preset-vaapi   # Intel VAAPI hardware-accelerated decoding
+  hwaccel_args: []
 
 # ===========================================
 # Generative AI (VLM) - Vision Language Model
@@ -81,10 +84,10 @@ record:
   enabled: true
   alerts:
     retain:
-      days: 14
+      days: 7
   detections:
     retain:
-      days: 14
+      days: 7
   continuous:
     days: 0
   motion:
@@ -94,7 +97,7 @@ snapshots:
   timestamp: true
   bounding_box: true
   retain:
-    default: 14
+    default: 7
 
 # Birdseye - combined camera view
 birdseye:
@@ -160,7 +163,7 @@ go2rtc:
   streams:
     iphone_camera:
       # go2rtc pulls MJPEG from iPhone and transcodes to H.264
-      - ffmpeg:http://admin:admin@192.168.16.221:8081/video#video=h264
+      - ffmpeg:http://admin:admin@192.168.0.186:8081/video#video=h264
 version: 0.18-0
 
 # ===========================================

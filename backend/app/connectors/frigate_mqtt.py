@@ -40,6 +40,8 @@ class FrigateMqttConnector:
         self._semaphore = asyncio.Semaphore(max_inflight)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: mqtt.Client | None = None
+        self._connected = False
+        self._last_error: str | None = None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -69,23 +71,41 @@ class FrigateMqttConnector:
         self._client = None
         if client is None:
             return
+        self._connected = False
         client.disconnect()
         client.loop_stop()
         self._logger.info("Frigate MQTT connector stopped")
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, flags: Any, reason_code: Any, properties: Any) -> None:
         if reason_code != 0:
+            self._connected = False
+            self._last_error = "connection_failed"
             self._logger.error("Frigate MQTT connection failed", extra={"reason_code": str(reason_code)})
             return
         subscriptions = [(topic, 1) for topic in self._mqtt_topics]
         result, _mid = client.subscribe(subscriptions)
         if result != mqtt.MQTT_ERR_SUCCESS:
+            self._connected = False
+            self._last_error = "subscription_failed"
             self._logger.error("Frigate MQTT subscription failed", extra={"result": result})
             return
+        self._connected = True
+        self._last_error = None
         self._logger.info("Frigate MQTT subscriptions active", extra={"topics": list(self._mqtt_topics)})
 
     def _on_disconnect(self, client: mqtt.Client, userdata: Any, disconnect_flags: Any, reason_code: Any, properties: Any) -> None:
+        self._connected = False
+        if reason_code != 0:
+            self._last_error = "disconnected"
         self._logger.warning("Frigate MQTT disconnected", extra={"reason_code": str(reason_code)})
+
+    def health_snapshot(self) -> dict[str, Any]:
+        return {
+            "status": "healthy" if self._connected else "degraded",
+            "connected": self._connected,
+            "subscribed_topics": len(self._mqtt_topics) if self._connected else 0,
+            "last_error": self._last_error,
+        }
 
     def _on_message(self, client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
         if self._loop is None:

@@ -43,6 +43,12 @@ class AppSettings(BaseSettings):
     )
     media_archive_retention_days: int = Field(default=7, validation_alias="MEDIA_ARCHIVE_RETENTION_DAYS")
     media_retry_max_attempts: int = Field(default=3, validation_alias="MEDIA_RETRY_MAX_ATTEMPTS")
+    media_retry_interval_seconds: int = Field(default=300, validation_alias="MEDIA_RETRY_INTERVAL_SECONDS")
+
+    retention_enabled: bool = Field(default=True, validation_alias="RETENTION_ENABLED")
+    retention_apply: bool = Field(default=False, validation_alias="RETENTION_APPLY")
+    retention_interval_seconds: int = Field(default=3600, validation_alias="RETENTION_INTERVAL_SECONDS")
+    heartbeat_interval_seconds: int = Field(default=30, validation_alias="HEARTBEAT_INTERVAL_SECONDS")
 
     api_host: str = Field(default="127.0.0.1", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")

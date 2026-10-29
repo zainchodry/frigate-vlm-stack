@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
+import httpx
 from fastapi import FastAPI
 
 from app import db
@@ -14,7 +18,109 @@ from app.connectors.frigate_mqtt import FrigateMqttConnector
 from app.connectors.home_assistant import HomeAssistantConnector
 from app.logging import configure_logging
 from app.monitoring.disk import DiskMonitor
+from app.monitoring.heartbeats import write_heartbeat
 from app.services.media_archive import MediaArchivePolicy, MediaArchiver
+from app.services.retention import expire_archived_assets
+
+
+def camera_health_status(camera: dict[str, Any]) -> str:
+    quality = camera.get("connection_quality")
+    camera_fps = float(camera.get("camera_fps") or 0)
+    process_fps = float(camera.get("process_fps") or 0)
+    if quality in {"unusable", "poor"} or camera_fps <= 0 or process_fps <= 0:
+        return "degraded"
+    return "healthy"
+
+
+async def _frigate_health(frigate_url: str) -> tuple[str, dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(base_url=frigate_url.rstrip("/"), timeout=5) as client:
+            response = await client.get("/api/stats")
+            response.raise_for_status()
+            payload = response.json()
+        camera = (payload.get("cameras") or {}).get("iphone_camera") or {}
+        return camera_health_status(camera), {
+            "camera_fps": camera.get("camera_fps"),
+            "process_fps": camera.get("process_fps"),
+            "detection_fps": camera.get("detection_fps"),
+            "skipped_fps": camera.get("skipped_fps"),
+            "connection_quality": camera.get("connection_quality"),
+            "reconnects_last_hour": camera.get("reconnects_last_hour"),
+            "stalls_last_hour": camera.get("stalls_last_hour"),
+        }
+    except Exception as exc:
+        return "unavailable", {"error": type(exc).__name__}
+
+
+async def _safe_heartbeat(
+    session_factory: Any,
+    name: str,
+    status: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    try:
+        await write_heartbeat(session_factory, name, status, details)
+    except Exception:
+        logging.getLogger(__name__).exception("service heartbeat write failed", extra={"service": name})
+
+
+async def _heartbeat_loop(
+    session_factory: Any,
+    settings: AppSettings,
+    disk_monitor: DiskMonitor,
+    mqtt_connector: FrigateMqttConnector,
+    ha_connector: HomeAssistantConnector,
+    media_archiver: MediaArchiver,
+    stop_event: asyncio.Event,
+) -> None:
+    retention_due = True
+    last_retention_at = 0.0
+    interval = max(5, settings.heartbeat_interval_seconds)
+    while not stop_event.is_set():
+        disk = disk_monitor.status()
+        ingestor_status = "degraded" if disk.level == "critical" else "healthy"
+        await _safe_heartbeat(
+            session_factory,
+            "ingestor",
+            ingestor_status,
+            {"disk": disk.as_dict()},
+        )
+        mqtt_health = mqtt_connector.health_snapshot()
+        await _safe_heartbeat(session_factory, "mqtt", mqtt_health["status"], mqtt_health)
+        ha_health = ha_connector.health_snapshot()
+        await _safe_heartbeat(session_factory, "home_assistant", ha_health["status"], ha_health)
+        media_health = media_archiver.health_snapshot()
+        await _safe_heartbeat(session_factory, "media_archive", media_health["status"], media_health)
+
+        frigate_status, frigate_details = await _frigate_health(settings.frigate_url)
+        await _safe_heartbeat(session_factory, "frigate", frigate_status, frigate_details)
+
+        if settings.retention_enabled and retention_due:
+            try:
+                summary = await expire_archived_assets(
+                    session_factory,
+                    Path(settings.media_archive_root),
+                    apply=settings.retention_apply,
+                )
+                await _safe_heartbeat(
+                    session_factory,
+                    "retention",
+                    "degraded" if summary["unsafe"] else "healthy",
+                    {**summary, "apply": settings.retention_apply},
+                )
+            except Exception:
+                logging.getLogger(__name__).exception("retention scan failed")
+                await _safe_heartbeat(session_factory, "retention", "degraded", {"error": "scan_failed"})
+            retention_due = False
+            last_retention_at = time.monotonic()
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            retention_due = (
+                settings.retention_enabled
+                and time.monotonic() - last_retention_at >= max(60, settings.retention_interval_seconds)
+            )
 
 
 def create_app(settings: AppSettings | None = None, start_connectors: bool = True) -> FastAPI:
@@ -47,6 +153,7 @@ def create_app(settings: AppSettings | None = None, start_connectors: bool = Tru
                 ha_url=active_settings.ha_url,
                 ha_token=active_settings.ha_token,
                 retry_max_attempts=active_settings.media_retry_max_attempts,
+                retry_interval_seconds=active_settings.media_retry_interval_seconds,
             )
             await media_archiver.start()
             mqtt_connector = FrigateMqttConnector(
@@ -76,10 +183,32 @@ def create_app(settings: AppSettings | None = None, start_connectors: bool = Tru
             await ha_connector.start()
             connectors.extend((mqtt_connector, ha_connector))
             application.state.connectors = connectors
+            heartbeat_stop = asyncio.Event()
+            heartbeat_task = asyncio.create_task(
+                _heartbeat_loop(
+                    db.session_factory,
+                    active_settings,
+                    application.state.disk_monitor,
+                    mqtt_connector,
+                    ha_connector,
+                    media_archiver,
+                    heartbeat_stop,
+                ),
+                name="service-heartbeats",
+            )
+            application.state.heartbeat_stop = heartbeat_stop
+            application.state.heartbeat_task = heartbeat_task
 
         try:
             yield
         finally:
+            heartbeat_stop = getattr(application.state, "heartbeat_stop", None)
+            heartbeat_task = getattr(application.state, "heartbeat_task", None)
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
             for connector in reversed(connectors):
                 try:
                     await connector.stop()  # type: ignore[attr-defined]
